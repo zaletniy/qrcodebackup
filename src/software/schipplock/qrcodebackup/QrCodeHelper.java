@@ -23,6 +23,7 @@ import org.imgscalr.Scalr;
 import software.schipplock.qrcodebackup.utils.FileHelper;
 
 import javax.imageio.ImageIO;
+import javax.imageio.stream.ImageInputStream;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.*;
@@ -34,7 +35,11 @@ import org.apache.commons.codec.binary.Base64;
 
 public class QrCodeHelper {
     private int maxByte = 2331;
+
+    private String author;
     private String filename;
+    private String title;
+    private String version;
 
     private static final Map<DecodeHintType,Object> HINTS;
     private static final Map<DecodeHintType,Object> HINTS_PURE;
@@ -47,8 +52,11 @@ public class QrCodeHelper {
         HINTS_PURE.put(DecodeHintType.PURE_BARCODE, Boolean.TRUE);
     }
 
-    public QrCodeHelper(String filename) {
+    public QrCodeHelper(String author, String filename, String title, String version) {
+        this.author = author;
         this.filename = filename;
+        this.title = title;
+        this.version = version;
     }
 
     private int getMaxByte() {
@@ -57,6 +65,18 @@ public class QrCodeHelper {
 
     private String getFilename() {
         return this.filename;
+    }
+
+    private String getAuthor() {
+        return this.author;
+    }
+
+    private String getTitle() {
+        return this.title;
+    }
+
+    private String getVersion() {
+        return this.version;
     }
 
     public Boolean generate(String targetDirectory) throws IOException, WriterException, COSVisitorException {
@@ -72,79 +92,101 @@ public class QrCodeHelper {
         Base64 encoder = new Base64();
         FileHelper.filePutContents(targetFile + ".xz.base64", encoder.encodeAsString(Files.readAllBytes(Paths.get(targetFile + ".xz"))));
 
-        // now split the compressed and base64 encoded file if needed
-        FileSplitter fileSplitter = new FileSplitter(new File(targetFile + ".xz.base64"));
-        String[] parts = fileSplitter.split(this.getMaxByte());
+        // check the maximum file size here
+        File base64EncodedFile = new File(targetFile + ".xz.base64");
+        System.out.println(base64EncodedFile.length());
+        if (base64EncodedFile.length() > this.getMaxByte()) {
+            System.err.println("file is " + (base64EncodedFile.length() - this.getMaxByte()) + " bytes too big; limit is: " + this.getMaxByte() + " bytes");
+            System.exit(2);
+        }
+
+        // create the qr code
         QRCodeWriter qrCodeWriter = new QRCodeWriter();
         Hashtable<EncodeHintType, ErrorCorrectionLevel> hintMap = new Hashtable<EncodeHintType, ErrorCorrectionLevel>();
         hintMap.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.M);
 
-        for (int run = 0; run < parts.length; run++) {
-            String filePath = targetFile + "_" + Integer.toString(run+1) + "_" + parts.length + ".png";
-            String fileType = "png";
-            File myFile = new File(filePath);
+        BufferedInputStream f = new BufferedInputStream(new FileInputStream(base64EncodedFile));
+        byte[] buffer = new byte[this.getMaxByte()];
+        f.read(buffer, 0, this.getMaxByte());
+        String content = new String(buffer);
+        long sourceFileSize = base64EncodedFile.length();
 
-            BitMatrix byteMatrix = qrCodeWriter.encode(parts[run], BarcodeFormat.QR_CODE, 800, 800, hintMap);
-            int CrunchifyWidth = byteMatrix.getWidth();
+        BitMatrix byteMatrix = qrCodeWriter.encode(content, BarcodeFormat.QR_CODE, 800, 800, hintMap);
+        int CrunchifyWidth = byteMatrix.getWidth();
 
-            BufferedImage image = new BufferedImage(CrunchifyWidth, CrunchifyWidth, BufferedImage.TYPE_INT_RGB);
-            image.createGraphics();
-            Graphics2D graphics = (Graphics2D) image.getGraphics();
+        BufferedImage image = new BufferedImage(CrunchifyWidth, CrunchifyWidth, BufferedImage.TYPE_INT_RGB);
+        image.createGraphics();
+        Graphics2D graphics = (Graphics2D) image.getGraphics();
 
-            graphics.setColor(Color.WHITE);
-            graphics.fillRect(0, 0, CrunchifyWidth, CrunchifyWidth);
-            graphics.setColor(Color.BLACK);
+        graphics.setColor(Color.WHITE);
+        graphics.fillRect(0, 0, CrunchifyWidth, CrunchifyWidth);
+        graphics.setColor(Color.BLACK);
 
-            for (int i = 0; i < CrunchifyWidth; i++) {
-                for (int j = 0; j < CrunchifyWidth; j++) {
-                    if (byteMatrix.get(i, j)) {
-                        graphics.fillRect(i, j, 1, 1);
-                    }
+        for (int i = 0; i < CrunchifyWidth; i++) {
+            for (int j = 0; j < CrunchifyWidth; j++) {
+                if (byteMatrix.get(i, j)) {
+                    graphics.fillRect(i, j, 1, 1);
                 }
             }
-            returnValue = ImageIO.write(image, fileType, myFile);
-
-            if (returnValue) {
-                // create pdf so we can easily print it
-                PDDocument document = new PDDocument();
-                PDPage page = new PDPage();
-                page.setMediaBox(new PDRectangle(259.63782F, 418.52756F));
-                document.addPage(page);
-
-                PDFont font = PDType1Font.COURIER;
-
-                PDPageContentStream contentStream = new PDPageContentStream(document, page);
-
-                // add _the_ image
-                PDXObjectImage ximage = new PDPixelMap(document, image);
-                float scale = 0.357f;
-                contentStream.drawXObject(ximage, -11, 135, ximage.getWidth() * scale, ximage.getHeight() * scale);
-
-                // add some info text; this is actually quite important when you have more than one qr code for one file
-                contentStream.beginText();
-                contentStream.setFont(font, 8);
-                contentStream.moveTextPositionByAmount(5, 135);
-                contentStream.drawString("Autor  : " + "Andreas Schipplock");
-                contentStream.moveTextPositionByAmount(0, -9);
-                contentStream.drawString("Datei  : " + FileHelper.basename(filePath.replace(".png", "").split("_")[1]));
-                contentStream.moveTextPositionByAmount(0, -9);
-                contentStream.drawString("Format : " + "xz 1.0.4, base64");
-                contentStream.moveTextPositionByAmount(0, -9);
-                contentStream.drawString("Datum  : " + LocalDate.now());
-                contentStream.moveTextPositionByAmount(0, -9);
-                contentStream.drawString("Größe  : " + fileSplitter.getChunkSize(run) + " Bytes");
-                contentStream.moveTextPositionByAmount(0, -9);
-                contentStream.drawString("Nummer : " + FileHelper.basename(filePath.replace(".png", "").split("_")[2]));
-                contentStream.moveTextPositionByAmount(0, -9);
-                contentStream.drawString("Anzahl : " + FileHelper.basename(filePath.replace(".png", "").split("_")[3]));
-                contentStream.endText();
-
-                contentStream.close();
-
-                document.save(filePath.replace(".png", ".pdf"));
-                document.close();
-            }
         }
+        returnValue = ImageIO.write(image, "png", base64EncodedFile);
+
+        if (returnValue) {
+            // create pdf so we can easily print it
+            PDDocument document = new PDDocument();
+            PDPage page = new PDPage();
+            // 100mm x 150mm at 72dpi
+            page.setMediaBox(new PDRectangle(100*(1/(10*2.54f)*72), 150*(1/(10*2.54f)*72)));
+            document.addPage(page);
+
+            PDFont font = PDType1Font.COURIER;
+            PDFont boldFont = PDType1Font.COURIER_BOLD;
+
+            PDPageContentStream contentStream = new PDPageContentStream(document, page);
+
+            // add _the_ image
+            PDXObjectImage ximage = new PDPixelMap(document, image);
+            float scale = 0.381f;
+            contentStream.drawXObject(ximage, -11, 131, ximage.getWidth() * scale, ximage.getHeight() * scale);
+
+            contentStream.drawLine(5, 141, 276, 141);
+
+            // add the logo
+            float logoScale = 0.28f;
+            ImageInputStream logoImg = ImageIO.createImageInputStream(this.getClass().getResourceAsStream("assets/logo.png"));
+            PDXObjectImage logoImage = new PDPixelMap(document, ImageIO.read(logoImg));
+
+            contentStream.drawXObject(logoImage, 25, 82, logoImage.getWidth() * logoScale, logoImage.getHeight() * logoScale);
+
+            contentStream.drawLine(5, 75, 276, 75);
+
+            // add some info text
+            contentStream.beginText();
+            contentStream.setFont(boldFont, 12);
+            contentStream.moveTextPositionByAmount(5, 60);
+            contentStream.drawString(this.getTitle());
+            contentStream.setFont(font, 9);
+            contentStream.moveTextPositionByAmount(0, -15);
+            contentStream.drawString("Aktoro    : " + this.getAuthor());
+            contentStream.moveTextPositionByAmount(0, -9);
+            contentStream.drawString("Versio    : " + this.getVersion());
+            contentStream.moveTextPositionByAmount(0, -9);
+            contentStream.drawString("Formato   : " + basename + ">base64>xz(1.0.4)");
+            contentStream.moveTextPositionByAmount(0, -9);
+            contentStream.drawString("Dato      : " + LocalDate.now());
+            contentStream.moveTextPositionByAmount(0, -9);
+            contentStream.drawString("Grandeco  : " + sourceFileSize + " Bytes");
+            contentStream.endText();
+
+            contentStream.close();
+
+            document.save(targetFile.replace(".java", "_" + this.getVersion() + ".pdf"));
+            document.close();
+        }
+
+        // cleanup
+        FileHelper.delete(targetFile + ".xz");
+        FileHelper.delete(targetFile + ".xz.base64");
 
         return returnValue;
     }
